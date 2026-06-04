@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.BackHandler
 import com.example.data.AlarmSettings
 import com.example.ui.AlarmViewModel
 import com.example.ui.ScreenState
@@ -38,6 +39,11 @@ fun SettingsScreen(
     settings: AlarmSettings
 ) {
     val scrollState = rememberScrollState()
+
+    // System back behavior for settings screen
+    BackHandler(enabled = true) {
+        viewModel.navigateTo(ScreenState.MAIN)
+    }
 
     // 登録された合い言葉の編集・登録用ダイアログ制御
     var showEditDialog by remember { mutableStateOf(false) }

@@ -21,7 +21,18 @@ class SpeechRecognizerHelper(private val context: Context) {
 
     fun startListening(contextToUse: Context, listener: SpeechListener) {
         stopListening()
-        if (!SpeechRecognizer.isRecognitionAvailable(contextToUse)) {
+        
+        val contextForAudio = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            try {
+                contextToUse.createAttributionContext("speech_recognition")
+            } catch (e: Exception) {
+                contextToUse
+            }
+        } else {
+            contextToUse
+        }
+
+        if (!SpeechRecognizer.isRecognitionAvailable(contextForAudio)) {
             listener.onError("お使いの端末は音声認識をサポートしていません。代わりにキーボード入力シミュレートが可能です。")
             return
         }
@@ -34,7 +45,7 @@ class SpeechRecognizerHelper(private val context: Context) {
         }
 
         try {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(contextToUse).apply {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(contextForAudio).apply {
                 setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) {
                         isCurrentlyListening = true
