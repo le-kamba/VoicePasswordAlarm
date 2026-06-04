@@ -12,6 +12,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,6 +24,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.BackHandler
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.AlarmViewModel
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -34,7 +37,15 @@ fun AlarmActiveScreen(
     viewModel: AlarmViewModel
 ) {
     val context = LocalContext.current
+    val isTestMode by viewModel.isTestMode.collectAsStateWithLifecycle()
     var currentTimeStr by remember { mutableStateOf("") }
+
+    // System back behavior
+    BackHandler(enabled = true) {
+        if (isTestMode) {
+            viewModel.navigateTo(com.example.ui.ScreenState.MAIN)
+        }
+    }
 
     // Tick the clock every 200ms for precision and responsiveness
     LaunchedEffect(Unit) {
@@ -125,43 +136,71 @@ fun AlarmActiveScreen(
             }
         }
 
-        // Voice recogniton start button with Mic icon
-        Button(
-            onClick = { viewModel.startVoiceRecognition(context) },
-            modifier = Modifier
-                .height(84.dp)
-                .fillMaxWidth(0.8f)
-                .testTag("dismiss_mic_button"),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary
-            ),
-            shape = RoundedCornerShape(28.dp),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp)
+        // Button Action Group
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
-                modifier = Modifier.fillMaxWidth()
+            // Voice recogniton start button with Mic icon
+            Button(
+                onClick = { viewModel.startVoiceRecognition(context) },
+                modifier = Modifier
+                    .height(84.dp)
+                    .fillMaxWidth(0.8f)
+                    .testTag("dismiss_mic_button"),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
+                ),
+                shape = RoundedCornerShape(28.dp),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Mic,
-                    contentDescription = "音声認識を開始",
-                    modifier = Modifier.size(36.dp),
-                    tint = MaterialTheme.colorScheme.onPrimary
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(
-                        text = "話して止める",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimary
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "音声認識を開始",
+                        modifier = Modifier.size(36.dp),
+                        tint = MaterialTheme.colorScheme.onPrimary
                     )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column {
+                        Text(
+                            text = "話して止める",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Text(
+                            text = "音声入力を起動する",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            }
+
+            if (isTestMode) {
+                // Cancel / Interrupt button to return to MainScreen
+                OutlinedButton(
+                    onClick = { viewModel.navigateTo(com.example.ui.ScreenState.MAIN) },
+                    modifier = Modifier
+                        .height(50.dp)
+                        .fillMaxWidth(0.8f)
+                        .testTag("cancel_alarm_active_button"),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    ),
+                    shape = RoundedCornerShape(25.dp)
+                ) {
                     Text(
-                        text = "音声入力を起動する",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                        text = "入力を中止して戻る",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }

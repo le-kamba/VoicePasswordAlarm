@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.BackHandler
 import com.example.data.AlarmSettings
 import com.example.ui.AlarmViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -35,7 +36,15 @@ fun VoiceRecognitionScreen(
     speechError: String?
 ) {
     val activeSessionPhrase by viewModel.activeSessionPhrase.collectAsStateWithLifecycle()
+    val isTestMode by viewModel.isTestMode.collectAsStateWithLifecycle()
     var simulateTextFieldValue by remember { mutableStateOf("") }
+
+    // Intercept back key action
+    BackHandler(enabled = true) {
+        if (isTestMode) {
+            viewModel.navigateTo(com.example.ui.ScreenState.MAIN)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -214,6 +223,27 @@ fun VoiceRecognitionScreen(
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
+        }
+
+        if (isTestMode) {
+            // Cancel / Interrupt button to return to MainScreen
+            OutlinedButton(
+                onClick = { viewModel.navigateTo(com.example.ui.ScreenState.MAIN) },
+                modifier = Modifier
+                    .height(48.dp)
+                    .fillMaxWidth(0.8f)
+                    .testTag("cancel_voice_rec_button"),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                ),
+                shape = RoundedCornerShape(24.dp)
+            ) {
+                Text(
+                    text = "入力を中止して戻る",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
 
         // SIMULATION UTILITY FOR DISMISSAL TESTING

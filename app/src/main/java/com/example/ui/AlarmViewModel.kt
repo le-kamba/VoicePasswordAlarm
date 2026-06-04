@@ -47,6 +47,10 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     private val _screenState = MutableStateFlow(ScreenState.MAIN)
     val screenState: StateFlow<ScreenState> = _screenState.asStateFlow()
 
+    // Test mode tracker
+    private val _isTestMode = MutableStateFlow(false)
+    val isTestMode: StateFlow<Boolean> = _isTestMode.asStateFlow()
+
     // Real-time voice inputs
     private val _recognizedText = MutableStateFlow("")
     val recognizedText: StateFlow<String> = _recognizedText.asStateFlow()
@@ -77,9 +81,10 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Handles alarm trigger
-    fun triggerAlarm() {
+    fun triggerAlarm(isTest: Boolean = false) {
         if (isAlarmRunning) return
         isAlarmRunning = true
+        _isTestMode.value = isTest
         _screenState.value = ScreenState.ALARM_TRIGGERED
         
         // Resolve target phrase for this active session
@@ -253,6 +258,7 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     // Stops the alarm and dismisses notifications
     private fun stopAlarmEntirely() {
         isAlarmRunning = false
+        _isTestMode.value = false
         activeContextRef = null
         speechHelper.stopListening()
         timeoutJob?.cancel()

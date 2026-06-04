@@ -324,7 +324,7 @@ fun MainScreen(
             Button(
                 onClick = {
                     // Instantly trigger alarm for testing
-                    viewModel.triggerAlarm()
+                    viewModel.triggerAlarm(isTest = true)
                 },
                 modifier = Modifier
                     .fillMaxWidth()
