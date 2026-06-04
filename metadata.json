@@ -1,0 +1,6 @@
+{
+  "name": "合い言葉アラーム",
+  "description": "音声認識で止めるシンプルな目覚まし時計アプリ。設定した停止ワードのリアルタイム音声判定、音量変更、バイブ制御を搭載。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
