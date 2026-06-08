@@ -16,17 +16,23 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.VoiceOverOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.activity.compose.BackHandler
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AlarmSettings
 import com.example.ui.AlarmViewModel
 import com.example.ui.ScreenState
@@ -38,7 +44,19 @@ fun SettingsScreen(
     viewModel: AlarmViewModel,
     settings: AlarmSettings
 ) {
+    val context = LocalContext.current
     val scrollState = rememberScrollState()
+
+    val isRegisteringListening by viewModel.isRegisteringListening.collectAsStateWithLifecycle()
+    val registeringSpeechText by viewModel.registeringSpeechText.collectAsStateWithLifecycle()
+    val registeringSpeechError by viewModel.registeringSpeechError.collectAsStateWithLifecycle()
+
+    // Cancel registration speech when the screen is left
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopRegistrationSpeechListening()
+        }
+    }
 
     // System back behavior for settings screen
     BackHandler(enabled = true) {
@@ -299,19 +317,19 @@ fun SettingsScreen(
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(16.dp))
                                         .background(
-                                            if (!settings.useRandomPhrase && settings.selectedPhraseIndex == index)
+                                            if (!settings.useRandomPhrase && !settings.requireAllPhrasesRandomOrder && settings.selectedPhraseIndex == index)
                                                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
                                             else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
                                         )
                                         .border(
                                             width = 1.dp,
-                                            color = if (!settings.useRandomPhrase && settings.selectedPhraseIndex == index)
+                                            color = if (!settings.useRandomPhrase && !settings.requireAllPhrasesRandomOrder && settings.selectedPhraseIndex == index)
                                                 MaterialTheme.colorScheme.primary
                                             else Color.Transparent,
                                             shape = RoundedCornerShape(16.dp)
                                         )
                                         .clickable {
-                                            if (!settings.useRandomPhrase) {
+                                            if (!settings.useRandomPhrase && !settings.requireAllPhrasesRandomOrder) {
                                                 viewModel.updateSelectedPhraseIndex(index)
                                             }
                                         }
@@ -324,7 +342,7 @@ fun SettingsScreen(
                                         modifier = Modifier.weight(1f)
                                     ) {
                                         RadioButton(
-                                            selected = !settings.useRandomPhrase && settings.selectedPhraseIndex == index,
+                                            selected = !settings.useRandomPhrase && !settings.requireAllPhrasesRandomOrder && settings.selectedPhraseIndex == index,
                                             onClick = { viewModel.updateSelectedPhraseIndex(index) },
                                             colors = RadioButtonDefaults.colors(selectedColor = MaterialTheme.colorScheme.primary)
                                         )
@@ -410,7 +428,7 @@ fun SettingsScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 RadioButton(
-                                    selected = !settings.useRandomPhrase,
+                                    selected = !settings.useRandomPhrase && !settings.requireAllPhrasesRandomOrder,
                                     onClick = { viewModel.updateUseRandomPhrase(false) }
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
@@ -452,6 +470,35 @@ fun SettingsScreen(
                                     )
                                     Text(
                                         text = "アラーム鳴動ごとに登録リストからランダムに選ばれます",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            // All Random Sequence
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .clickable { viewModel.updateRequireAllPhrasesRandomOrder(true) }
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = settings.requireAllPhrasesRandomOrder,
+                                    onClick = { viewModel.updateRequireAllPhrasesRandomOrder(true) }
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "登録したすべての順番をランダムに、すべて一致させる",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "登録されているすべての合い言葉をランダムな順番で、順番にすべて一致させます",
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -504,7 +551,10 @@ fun SettingsScreen(
             if (showEditDialog) {
                 val phraseCurrentList = listOf(settings.stopPhrase1, settings.stopPhrase2, settings.stopPhrase3)
                 AlertDialog(
-                    onDismissRequest = { showEditDialog = false },
+                    onDismissRequest = { 
+                        viewModel.stopRegistrationSpeechListening()
+                        showEditDialog = false 
+                    },
                     title = {
                         Text(
                             text = if (phraseCurrentList[dialogIndexToEdit].isNotBlank()) "合い言葉の編集" else "新しい合い言葉の登録",
@@ -512,27 +562,134 @@ fun SettingsScreen(
                         )
                     },
                     text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                text = "アラームを止めるために発声する言葉を入力してください",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            OutlinedTextField(
-                                value = dialogTextValue,
-                                onValueChange = { dialogTextValue = it },
-                                singleLine = true,
-                                placeholder = { Text("例: おはようございます") },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("dialog_stop_phrase_input"),
-                                shape = RoundedCornerShape(12.dp)
-                            )
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            // VOICE RECOGNITION (PRIORITY 1)
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isRegisteringListening) {
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                    }
+                                ),
+                                shape = RoundedCornerShape(20.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text(
+                                        text = "【推奨】音声入力で登録 (優先)",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    
+                                    // Big Mic Button (Action)
+                                    IconButton(
+                                        onClick = {
+                                            if (isRegisteringListening) {
+                                                viewModel.stopRegistrationSpeechListening()
+                                            } else {
+                                                viewModel.startRegistrationSpeechListening(context) { text ->
+                                                    dialogTextValue = text
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(72.dp)
+                                            .clip(RoundedCornerShape(36.dp))
+                                            .background(
+                                                if (isRegisteringListening) MaterialTheme.colorScheme.errorContainer
+                                                else MaterialTheme.colorScheme.primaryContainer
+                                            )
+                                            .testTag("dialog_mic_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isRegisteringListening) Icons.Default.Stop else Icons.Default.Mic,
+                                            contentDescription = if (isRegisteringListening) "録音を停止" else "音声入力を開始",
+                                            tint = if (isRegisteringListening) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(34.dp)
+                                        )
+                                    }
+                                    
+                                    // Voice State Message & Real-time Output
+                                    if (isRegisteringListening) {
+                                        Text(
+                                            text = "マイクに向かって話してください...",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        Text(
+                                            text = registeringSpeechText.ifEmpty { "（聞き取り中...）" },
+                                            fontSize = 18.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.testTag("dialog_realtime_transcript")
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "マイクボタンをタップして発音テストができます。\n認識しやすい言葉が自動で入力されます。",
+                                            fontSize = 11.sp,
+                                            lineHeight = 15.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        if (registeringSpeechError != null) {
+                                            Text(
+                                                text = registeringSpeechError ?: "",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.error,
+                                                textAlign = TextAlign.Center
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // MANUAL ADJUSTMENT / FALLBACK (PRIORITY 2)
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "確認・キーボードで微調整:",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                OutlinedTextField(
+                                    value = dialogTextValue,
+                                    onValueChange = { dialogTextValue = it },
+                                    singleLine = true,
+                                    placeholder = { Text("例: おはようございます") },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("dialog_stop_phrase_input"),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                Text(
+                                    text = "※ 漢字表記でも裏側で音声照合されますが、より認識をスムーズにするために「ひらがな」での登録をおすすめします。",
+                                    fontSize = 10.sp,
+                                    lineHeight = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                )
+                            }
                         }
                     },
                     confirmButton = {
                         Button(
                             onClick = {
+                                viewModel.stopRegistrationSpeechListening()
                                 if (dialogTextValue.isNotBlank()) {
                                     viewModel.updateStopPhrase(dialogIndexToEdit, dialogTextValue.trim())
                                     showEditDialog = false
@@ -545,7 +702,12 @@ fun SettingsScreen(
                         }
                     },
                     dismissButton = {
-                        TextButton(onClick = { showEditDialog = false }) {
+                        TextButton(
+                            onClick = { 
+                                viewModel.stopRegistrationSpeechListening()
+                                showEditDialog = false 
+                            }
+                        ) {
                             Text("キャンセル")
                         }
                     },

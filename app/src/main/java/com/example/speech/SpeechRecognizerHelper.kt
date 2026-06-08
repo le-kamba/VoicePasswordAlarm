@@ -105,6 +105,7 @@ class SpeechRecognizerHelper(private val context: Context) {
     fun stopListening() {
         try {
             speechRecognizer?.apply {
+                setRecognitionListener(null)
                 stopListening()
                 cancel()
                 destroy()

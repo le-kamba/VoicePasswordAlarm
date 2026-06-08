@@ -122,6 +122,106 @@ class SynthesizedSoundPlayer {
         }
     }
 
+    fun playOneShotEffect(effectType: String, volume: Float) {
+        scope.launch {
+            val sampleRate = 22050
+            val durationSamples = when (effectType) {
+                "EFFECT_START" -> (sampleRate * 0.2).toInt() // 200 ms
+                "EFFECT_SUCCESS" -> (sampleRate * 0.6).toInt() // 600 ms
+                "EFFECT_FAILURE" -> (sampleRate * 0.4).toInt() // 400 ms
+                else -> (sampleRate * 0.3).toInt()
+            }
+            
+            val buffer = ShortArray(durationSamples)
+            
+            when (effectType) {
+                "EFFECT_START" -> {
+                    // Two quick sweet notes: E5 (659.25 Hz) then B5 (987.77 Hz)
+                    val half = durationSamples / 2
+                    for (i in 0 until half) {
+                        val t = i.toDouble() / sampleRate
+                        val wave = sin(2.0 * Math.PI * 659.25 * t)
+                        val env = 1.0 - (i.toDouble() / half)
+                        buffer[i] = (wave * 12000 * env).toInt().toShort()
+                    }
+                    for (i in half until durationSamples) {
+                        val t = (i - half).toDouble() / sampleRate
+                        val wave = sin(2.0 * Math.PI * 987.77 * t)
+                        val env = 1.0 - ((i - half).toDouble() / half)
+                        buffer[i] = (wave * 12000 * env).toInt().toShort()
+                    }
+                }
+                "EFFECT_SUCCESS" -> {
+                    // do-mi-sol-do / C5 (523.25), E4 (659.25), G5 (783.99), C6 (1046.50)
+                    val notes = doubleArrayOf(523.25, 659.25, 783.99, 1046.50)
+                    val noteSamples = durationSamples / notes.size
+                    for (n in notes.indices) {
+                        val freq = notes[n]
+                        val startIdx = n * noteSamples
+                        for (i in 0 until noteSamples) {
+                            val idx = startIdx + i
+                            if (idx >= buffer.size) break
+                            val t = i.toDouble() / sampleRate
+                            val wave = sin(2.0 * Math.PI * freq * t) + 0.3 * sin(2.0 * Math.PI * (freq * 2.0) * t)
+                            val env = 1.0 - (i.toDouble() / noteSamples)
+                            buffer[idx] = (wave * 12000 * env).toInt().toShort()
+                        }
+                    }
+                }
+                "EFFECT_FAILURE" -> {
+                    // Double low buzz: 180Hz then 140Hz
+                    val half = durationSamples / 2
+                    val silenceSamples = (sampleRate * 0.04).toInt()
+                    for (i in 0 until half - silenceSamples) {
+                        val t = i.toDouble() / sampleRate
+                        val rawEnv = sin(2.0 * Math.PI * 180.0 * t)
+                        val wave = if (rawEnv > 0) 1.0 else -1.0
+                        val env = 1.0 - (i.toDouble() / (half - silenceSamples))
+                        buffer[i] = (wave * 7000 * env).toInt().toShort()
+                    }
+                    for (i in half until durationSamples - silenceSamples) {
+                        val t = (i - half).toDouble() / sampleRate
+                        val rawEnv = sin(2.0 * Math.PI * 140.0 * t)
+                        val wave = if (rawEnv > 0) 1.0 else -1.0
+                        val env = 1.0 - ((i - half).toDouble() / (half - silenceSamples))
+                        buffer[i] = (wave * 7000 * env).toInt().toShort()
+                    }
+                }
+            }
+            
+            var track: AudioTrack? = null
+            try {
+                @Suppress("DEPRECATION")
+                track = AudioTrack(
+                    AudioManager.STREAM_ALARM,
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    durationSamples * 2,
+                    AudioTrack.MODE_STATIC
+                )
+                track.write(buffer, 0, buffer.size)
+                track.setVolume(volume)
+                track.play()
+                val playMillis = (durationSamples * 1000L) / sampleRate
+                delay(playMillis + 100)
+            } catch (e: Exception) {
+                Log.e("SynthesizedSoundPlayer", "Error playing one-shot effect", e)
+            } finally {
+                try {
+                    track?.apply {
+                        if (playState == AudioTrack.PLAYSTATE_PLAYING) {
+                            stop()
+                        }
+                        release()
+                    }
+                } catch (e: Exception) {
+                    // ignore
+                }
+            }
+        }
+    }
+
     fun stopPlaying() {
         playbackJob?.cancel()
         playbackJob = null

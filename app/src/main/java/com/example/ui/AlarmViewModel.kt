@@ -16,6 +16,7 @@ import com.example.data.AppDatabase
 import com.example.receiver.AlarmReceiver
 import com.example.scheduler.AlarmScheduler
 import com.example.speech.SpeechRecognizerHelper
+import android.icu.text.Transliterator
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +31,12 @@ enum class ScreenState {
     SETTINGS,
     ALARM_TRIGGERED,
     VOICE_RECOGNITION
+}
+
+enum class SpeechEvaluationState {
+    NONE,
+    SUCCESS,
+    FAILURE
 }
 
 class AlarmViewModel(application: Application) : AndroidViewModel(application) {
@@ -55,17 +62,38 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     private val _recognizedText = MutableStateFlow("")
     val recognizedText: StateFlow<String> = _recognizedText.asStateFlow()
 
+    private val _evaluationState = MutableStateFlow(SpeechEvaluationState.NONE)
+    val evaluationState: StateFlow<SpeechEvaluationState> = _evaluationState.asStateFlow()
+
     private val _speechError = MutableStateFlow<String?>(null)
     val speechError: StateFlow<String?> = _speechError.asStateFlow()
 
+    private val _isRegisteringListening = MutableStateFlow(false)
+    val isRegisteringListening: StateFlow<Boolean> = _isRegisteringListening.asStateFlow()
+
+    private val _registeringSpeechText = MutableStateFlow("")
+    val registeringSpeechText: StateFlow<String> = _registeringSpeechText.asStateFlow()
+
+    private val _registeringSpeechError = MutableStateFlow<String?>(null)
+    val registeringSpeechError: StateFlow<String?> = _registeringSpeechError.asStateFlow()
+
     private val _timeoutSecondsRemaining = MutableStateFlow(60)
     val timeoutSecondsRemaining: StateFlow<Int> = _timeoutSecondsRemaining.asStateFlow()
+
+    // Target phrases remaining in the current session
+    private val _targetPhrasesQueue = MutableStateFlow<List<String>>(emptyList())
+    val targetPhrasesQueue: StateFlow<List<String>> = _targetPhrasesQueue.asStateFlow()
+
+    // Total phrases to clear in this active session
+    private val _totalPhrasesCount = MutableStateFlow(0)
+    val totalPhrasesCount: StateFlow<Int> = _totalPhrasesCount.asStateFlow()
 
     // Resolved active stopping phrase for the current session
     private val _activeSessionPhrase = MutableStateFlow("おはようございます")
     val activeSessionPhrase: StateFlow<String> = _activeSessionPhrase.asStateFlow()
 
     private var timeoutJob: Job? = null
+    private var speechRestartJob: Job? = null
     private var isAlarmRunning = false
 
     init {
@@ -125,8 +153,17 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     fun resolveActiveSessionPhrase() {
         val s = _settings.value
         val list = listOf(s.stopPhrase1, s.stopPhrase2, s.stopPhrase3).filter { it.isNotBlank() }
-        if (s.useRandomPhrase) {
-            _activeSessionPhrase.value = if (list.isNotEmpty()) list.random() else "おはようございます"
+        
+        if (s.requireAllPhrasesRandomOrder) {
+            val shuffled = list.shuffled()
+            _targetPhrasesQueue.value = shuffled
+            _totalPhrasesCount.value = shuffled.size
+            _activeSessionPhrase.value = if (shuffled.isNotEmpty()) shuffled.first() else "おはようございます"
+        } else if (s.useRandomPhrase) {
+            val chosen = if (list.isNotEmpty()) list.random() else "おはようございます"
+            _targetPhrasesQueue.value = listOf(chosen)
+            _totalPhrasesCount.value = 1
+            _activeSessionPhrase.value = chosen
         } else {
             val chosen = when (s.selectedPhraseIndex) {
                 0 -> s.stopPhrase1
@@ -134,15 +171,22 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
                 2 -> s.stopPhrase3
                 else -> s.stopPhrase1
             }
-            _activeSessionPhrase.value = if (chosen.isNotBlank()) chosen else (list.firstOrNull() ?: "おはようございます")
+            val resolved = if (chosen.isNotBlank()) chosen else (list.firstOrNull() ?: "おはようございます")
+            _targetPhrasesQueue.value = listOf(resolved)
+            _totalPhrasesCount.value = 1
+            _activeSessionPhrase.value = resolved
         }
     }
 
     private fun startSpeechListeningSession() {
+        speechRestartJob?.cancel()
         val context = activeContextRef?.get() ?: getApplication<Application>()
         speechHelper.startListening(context, object : SpeechRecognizerHelper.SpeechListener {
             override fun onReady() {
                 _speechError.value = null
+                _recognizedText.value = ""
+                // Play soft start beep programmatically when local mic session is fully active/ready
+                soundPlayer.playOneShotEffect("EFFECT_START", _settings.value.volume * 0.8f)
             }
 
             override fun onPartialResult(text: String) {
@@ -150,23 +194,22 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
                     _recognizedText.value = text
                     // Reset timeout since speech was received ("音声入力が行われた")
                     resetTimeoutTimer()
-                    checkVoiceMatch(text)
                 }
             }
 
             override fun onFinalResult(text: String) {
-                if (text.isNotEmpty()) {
-                    _recognizedText.value = text
-                    resetTimeoutTimer()
-                    checkVoiceMatch(text)
-                }
+                processVoiceResult(text)
             }
 
             override fun onError(errorMsg: String) {
+                if (_evaluationState.value != SpeechEvaluationState.NONE) {
+                    return
+                }
                 _speechError.value = errorMsg
                 // Automatically restart listening to allow fluid continuous speak tries, unless we exited the screen
                 if (_screenState.value == ScreenState.VOICE_RECOGNITION) {
-                    viewModelScope.launch {
+                    speechRestartJob?.cancel()
+                    speechRestartJob = viewModelScope.launch {
                         delay(2000)
                         if (_screenState.value == ScreenState.VOICE_RECOGNITION) {
                             startSpeechListeningSession()
@@ -177,24 +220,116 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
         })
     }
 
-    // Checks similarity between speech and stop target phrase
-    private fun checkVoiceMatch(text: String) {
+    // Checks similarity between speech and stop target phrase (read-only comparison)
+    fun isPhraseMatching(text: String): Boolean {
         val target = _activeSessionPhrase.value
         val accuracyThreshold = _settings.value.matchAccuracy
         val similarity = calculateSimilarity(text, target)
-        
-        Log.d("AlarmViewModel", "Comparing '$text' with '$target'. Quality score: $similarity (Target: $accuracyThreshold)")
+        Log.d("AlarmViewModel", "Verification similarity: $similarity vs $accuracyThreshold")
+        return similarity >= accuracyThreshold
+    }
 
-        if (similarity >= accuracyThreshold) {
-            // Dismiss alarm completely!
-            stopAlarmEntirely()
+    // Process the final voice input with visual and sound feedback delay
+    fun processVoiceResult(text: String) {
+        // Cancel any pending speech restart jobs to avoid duplicates
+        speechRestartJob?.cancel()
+        
+        // Stop speech recognizer temporarily to prevent listener overlaps during visual feedback delay
+        speechHelper.stopListening()
+
+        speechRestartJob = viewModelScope.launch {
+            if (text.isEmpty()) {
+                // If text is empty, restart listening after a brief delay
+                delay(1000)
+                if (_screenState.value == ScreenState.VOICE_RECOGNITION) {
+                    startSpeechListeningSession()
+                }
+                return@launch
+            }
+
+            _recognizedText.value = text
+            resetTimeoutTimer()
+
+            val matched = isPhraseMatching(text)
+            if (matched) {
+                _evaluationState.value = SpeechEvaluationState.SUCCESS
+                _speechError.value = null
+                val currentVolume = _settings.value.volume
+                soundPlayer.playOneShotEffect("EFFECT_SUCCESS", currentVolume * 1.2f)
+                
+                // CRITICAL REQUIREMENT: Wait 1500ms so the user can easily see their full text displayed with green "SUCCESS" indicator
+                delay(1500)
+                
+                if (_screenState.value == ScreenState.VOICE_RECOGNITION) {
+                    val currentQueue = _targetPhrasesQueue.value
+                    val s = _settings.value
+                    if (s.requireAllPhrasesRandomOrder && currentQueue.size > 1) {
+                        val nextQueue = currentQueue.drop(1)
+                        _targetPhrasesQueue.value = nextQueue
+                        _activeSessionPhrase.value = nextQueue.first()
+                        _recognizedText.value = ""
+                        _evaluationState.value = SpeechEvaluationState.NONE
+                        resetTimeoutTimer()
+                        
+                        // Restart listening session for the next phrase
+                        startSpeechListeningSession()
+                    } else {
+                        // All cleared! Stop alarm completely
+                        _evaluationState.value = SpeechEvaluationState.NONE
+                        stopAlarmEntirely()
+                    }
+                }
+            } else {
+                _evaluationState.value = SpeechEvaluationState.FAILURE
+                _speechError.value = "合い言葉が一致しません。もう一度お試しください。"
+                val currentVolume = _settings.value.volume
+                soundPlayer.playOneShotEffect("EFFECT_FAILURE", currentVolume)
+                
+                // CRITICAL REQUIREMENT: Wait 1500ms so the user can easily see their full text and read the mismatch error
+                delay(1500)
+                
+                if (_screenState.value == ScreenState.VOICE_RECOGNITION) {
+                    _recognizedText.value = ""
+                    _evaluationState.value = SpeechEvaluationState.NONE
+                    resetTimeoutTimer()
+                    
+                    // Restart listening for the next try
+                    startSpeechListeningSession()
+                }
+            }
         }
     }
 
-    // String fuzzy Levenshtein and containment similarity algorithm
+    private fun toHiraganaNormalized(text: String): String {
+        var clean = text.lowercase().trim()
+            .replace("[、。！？・…\\s\n\r.,!?:;\"'()（）<>＜＞\\[\\]{}ー〜\\-_]".toRegex(), "")
+        
+        try {
+            val transliterator = Transliterator.getInstance("Any-Hiragana")
+            clean = transliterator.transliterate(clean)
+        } catch (e: Exception) {
+            Log.e("AlarmViewModel", "Transliterator conversion error", e)
+            val sb = java.lang.StringBuilder()
+            for (char in clean) {
+                if (char in '\u30A1'..'\u30F6') {
+                    sb.append((char.code - 0x60).toChar())
+                } else {
+                    sb.append(char)
+                }
+            }
+            clean = sb.toString()
+        }
+        
+        return java.text.Normalizer.normalize(clean, java.text.Normalizer.Form.NFC)
+    }
+
+    // String fuzzy Levenshtein and containment similarity algorithm using ICU Transliteration for Japanese phonetic normalizations
     private fun calculateSimilarity(s1: String, s2: String): Float {
-        val str1 = s1.lowercase().trim().replace("\\s".toRegex(), "")
-        val str2 = s2.lowercase().trim().replace("\\s".toRegex(), "")
+        val str1 = toHiraganaNormalized(s1)
+        val str2 = toHiraganaNormalized(s2)
+        
+        Log.d("AlarmViewModel", "Normalized strings for match check: Input='$str1', Target='$str2'")
+        
         if (str1 == str2) return 1.0f
         if (str1.isEmpty() || str2.isEmpty()) return 0.0f
         
@@ -242,6 +377,7 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun returnToAlarmFiredScreenOnTimeout() {
+        speechRestartJob?.cancel()
         activeContextRef = null
         speechHelper.stopListening()
         timeoutJob?.cancel()
@@ -257,6 +393,7 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
 
     // Stops the alarm and dismisses notifications
     private fun stopAlarmEntirely() {
+        speechRestartJob?.cancel()
         isAlarmRunning = false
         _isTestMode.value = false
         activeContextRef = null
@@ -379,14 +516,31 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateSelectedPhraseIndex(index: Int) {
         viewModelScope.launch {
-            val updated = _settings.value.copy(selectedPhraseIndex = index, useRandomPhrase = false)
+            val updated = _settings.value.copy(
+                selectedPhraseIndex = index, 
+                useRandomPhrase = false, 
+                requireAllPhrasesRandomOrder = false
+            )
             repository.saveAlarmSettings(updated)
         }
     }
 
     fun updateUseRandomPhrase(enabled: Boolean) {
         viewModelScope.launch {
-            val updated = _settings.value.copy(useRandomPhrase = enabled)
+            val updated = _settings.value.copy(
+                useRandomPhrase = enabled,
+                requireAllPhrasesRandomOrder = false
+            )
+            repository.saveAlarmSettings(updated)
+        }
+    }
+
+    fun updateRequireAllPhrasesRandomOrder(enabled: Boolean) {
+        viewModelScope.launch {
+            val updated = _settings.value.copy(
+                requireAllPhrasesRandomOrder = enabled,
+                useRandomPhrase = false
+            )
             repository.saveAlarmSettings(updated)
         }
     }
@@ -441,20 +595,65 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun startRegistrationSpeechListening(context: Context, onSpeechRecognized: (String) -> Unit) {
+        _isRegisteringListening.value = true
+        _registeringSpeechText.value = ""
+        _registeringSpeechError.value = null
+
+        speechHelper.startListening(context, object : SpeechRecognizerHelper.SpeechListener {
+            override fun onReady() {
+                _registeringSpeechText.value = ""
+                _registeringSpeechError.value = null
+                soundPlayer.playOneShotEffect("EFFECT_START", _settings.value.volume * 0.8f)
+            }
+
+            override fun onPartialResult(text: String) {
+                if (_isRegisteringListening.value) {
+                    _registeringSpeechText.value = text
+                    onSpeechRecognized(text)
+                }
+            }
+
+            override fun onFinalResult(text: String) {
+                if (_isRegisteringListening.value) {
+                    _registeringSpeechText.value = text
+                    if (text.isNotEmpty()) {
+                        onSpeechRecognized(text)
+                        soundPlayer.playOneShotEffect("EFFECT_SUCCESS", _settings.value.volume * 0.8f)
+                    }
+                    _isRegisteringListening.value = false
+                }
+            }
+
+            override fun onError(errorMsg: String) {
+                if (_isRegisteringListening.value) {
+                    _registeringSpeechError.value = errorMsg
+                    _isRegisteringListening.value = false
+                }
+            }
+        })
+    }
+
+    fun stopRegistrationSpeechListening() {
+        if (_isRegisteringListening.value) {
+            speechHelper.stopListening()
+            _isRegisteringListening.value = false
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         soundPlayer.stopPlaying()
         stopVibration()
         speechHelper.stopListening()
         timeoutJob?.cancel()
+        speechRestartJob?.cancel()
     }
 
     // Allows manual keyboard-simulation test input for speech recognition (excellent for testing/emulators)
     fun simulateVoiceSpeechInput(simulatedText: String) {
         if (_screenState.value == ScreenState.VOICE_RECOGNITION) {
-            _recognizedText.value = simulatedText
-            resetTimeoutTimer()
-            checkVoiceMatch(simulatedText)
+            processVoiceResult(simulatedText)
         }
     }
 }

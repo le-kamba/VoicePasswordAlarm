@@ -35,6 +35,7 @@ data class AlarmSettings(
     // Options: "Fix selection" (0, 1, 2) vs "Use random every time" (true/false)
     val selectedPhraseIndex: Int = 0,
     val useRandomPhrase: Boolean = false,
+    val requireAllPhrasesRandomOrder: Boolean = false,
     
     val matchAccuracy: Float = 0.70f // Threshold for matching success, default 70%
 )

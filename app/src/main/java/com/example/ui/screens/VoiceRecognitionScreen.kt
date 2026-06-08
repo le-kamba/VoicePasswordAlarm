@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.sp
 import androidx.activity.compose.BackHandler
 import com.example.data.AlarmSettings
 import com.example.ui.AlarmViewModel
+import com.example.ui.SpeechEvaluationState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.math.roundToInt
 
@@ -38,8 +39,18 @@ fun VoiceRecognitionScreen(
     speechError: String?
 ) {
     val activeSessionPhrase by viewModel.activeSessionPhrase.collectAsStateWithLifecycle()
+    val targetPhrasesQueue by viewModel.targetPhrasesQueue.collectAsStateWithLifecycle()
+    val totalPhrasesCount by viewModel.totalPhrasesCount.collectAsStateWithLifecycle()
     val isTestMode by viewModel.isTestMode.collectAsStateWithLifecycle()
+    val evaluationState by viewModel.evaluationState.collectAsStateWithLifecycle()
     var simulateTextFieldValue by remember { mutableStateOf("") }
+
+    // Clear simulation field when recognition is cleared / reset
+    LaunchedEffect(recognizedText) {
+        if (recognizedText.isEmpty()) {
+            simulateTextFieldValue = ""
+        }
+    }
 
     // Intercept back key action
     BackHandler(enabled = true) {
@@ -78,8 +89,14 @@ fun VoiceRecognitionScreen(
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary
             )
+            val subText = if (settings.requireAllPhrasesRandomOrder) {
+                val cleared = totalPhrasesCount - targetPhrasesQueue.size
+                "全一致モードが作動中！\n登録ワードをランダム順に1つずつ発声してください (クリア: $cleared / $totalPhrasesCount)"
+            } else {
+                "設定されたフレーズをマイクに向かって話してください"
+            }
             Text(
-                text = "設定されたフレーズをマイクに向かって話してください",
+                text = subText,
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
                 textAlign = TextAlign.Center
@@ -119,6 +136,12 @@ fun VoiceRecognitionScreen(
         }
 
         // SPEECH DISPLAY BOARD (Real-time Transcript)
+        val cardBgColor = when (evaluationState) {
+            SpeechEvaluationState.SUCCESS -> Color(0xFFE8F5E9)
+            SpeechEvaluationState.FAILURE -> Color(0xFFFFEBEE)
+            SpeechEvaluationState.NONE -> MaterialTheme.colorScheme.surface
+        }
+
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -126,7 +149,7 @@ fun VoiceRecognitionScreen(
                 .testTag("speech_transcript_card"),
             shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
+                containerColor = cardBgColor
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
@@ -155,14 +178,56 @@ fun VoiceRecognitionScreen(
                         )
                     }
                 } else {
-                    Text(
-                        text = recognizedText,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.testTag("realtime_transcript_text")
-                    )
+                    when (evaluationState) {
+                        SpeechEvaluationState.SUCCESS -> {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = "一致しました！ (OK)",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF2E7D32)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = recognizedText,
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF1B5E20),
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.testTag("realtime_transcript_text")
+                                )
+                            }
+                        }
+                        SpeechEvaluationState.FAILURE -> {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = "一致しませんでした (NG)",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFC62828)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = recognizedText,
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFB71C1C),
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.testTag("realtime_transcript_text")
+                                )
+                            }
+                        }
+                        SpeechEvaluationState.NONE -> {
+                            Text(
+                                text = recognizedText,
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.testTag("realtime_transcript_text")
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -182,17 +247,25 @@ fun VoiceRecognitionScreen(
                 horizontalArrangement = Arrangement.SpaceAround,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                    val progressText = if (settings.requireAllPhrasesRandomOrder) {
+                        val cleared = totalPhrasesCount - targetPhrasesQueue.size
+                        "停止ターゲット (${cleared + 1}/$totalPhrasesCount)"
+                    } else {
+                        "停止ターゲット"
+                    }
                     Text(
-                        text = "停止ターゲット",
+                        text = progressText,
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
                     )
                     Text(
                         text = activeSessionPhrase,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center
                     )
                 }
                 VerticalDivider(
@@ -201,17 +274,19 @@ fun VoiceRecognitionScreen(
                     thickness = 1.dp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
                 )
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
                     Text(
                         text = "判定基準精度",
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
                     )
                     Text(
                         text = "${(settings.matchAccuracy * 100).roundToInt()}% 以上",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center
                     )
                 }
             }
